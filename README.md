@@ -10,11 +10,27 @@ date. Each member can have one payment record per contribution month.
 Registration, payment history, and payment entry require an authenticated
 admin account.
 
+Loan tracking uses simple interest at 2% per calendar month on outstanding
+principal. Interest starts in the month after the loan is issued; unpaid
+interest does not itself accrue interest. Repayments are applied to accrued
+interest before principal. Any accrued interest is waived once the full
+principal has been repaid. Run [`supabase/loans.sql`](supabase/loans.sql) in
+the Supabase SQL Editor to enable loan accounts and repayment history. The
+screen then shows open and repaid loans, balances, and repayment allocations.
+
+The **रोख व UPI व्यवहार** page records deposits and expenses by cash or UPI.
+Run [`supabase/finance_transactions.sql`](supabase/finance_transactions.sql)
+to create its admin-only ledger. The **अहवाल** page summarizes monthly savings,
+loans issued, repayments, and outstanding loan balances from the saved records.
+
 1. Create a Supabase project and run
    [`supabase/schema.sql`](supabase/schema.sql) in its SQL Editor. If you have
    already run the schema, run the additive
-   [`supabase/monthly_savings.sql`](supabase/monthly_savings.sql) migration
-   instead to create the savings-history table and policies.
+   [`supabase/monthly_savings.sql`](supabase/monthly_savings.sql),
+   [`supabase/loans.sql`](supabase/loans.sql), and
+   [`supabase/finance_transactions.sql`](supabase/finance_transactions.sql)
+   migrations to create savings history, loans, repayment functions, and the
+   finance transaction ledger.
 2. Create the staff login account in the Supabase dashboard under
    **Authentication > Users**. Promote that account to an admin by running
    this in the SQL Editor, replacing the email:

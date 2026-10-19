@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class Member {
@@ -68,6 +70,21 @@ class MemberRepository {
       .map((members) => members.length)
       .asBroadcastStream();
   MemberRepository(this._client);
+
+  Future<List<Member>> fetchMembers() async {
+    final rows = await _client
+        .from('members')
+        .select('id, name, phone, created_at')
+        .order('created_at', ascending: false)
+        .timeout(
+          const Duration(seconds: 10),
+          onTimeout: () => throw TimeoutException(
+            'Supabase did not respond within 10 seconds. Check that the project '
+            'is active and the device has an internet connection.',
+          ),
+        );
+    return rows.map(Member.fromMap).toList();
+  }
 
   Future<SavingsOverview> fetchSavingsOverview() async {
     final memberRows = await _client
