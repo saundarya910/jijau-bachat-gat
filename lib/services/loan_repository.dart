@@ -42,7 +42,7 @@ class LoanAccount {
         )
         .toList();
 
-    var accruedInterest = 0.0;
+    var accruedInterest = _roundCurrency(principal * 0.02);
     var accrualMonth = DateTime(loanDate.year, loanDate.month + 1);
     while (!accrualMonth.isAfter(endDate)) {
       final principalPaidBeforeMonth = relevantPayments
@@ -73,7 +73,13 @@ class LoanAccount {
 
     return LoanBalance(
       principalRemaining: principalRemaining,
-      interestRemaining: principalRemaining == 0 ? 0 : interestRemaining,
+      interestRemaining: principalRemaining == 0
+          ? 0
+          : _roundCurrency(
+              interestRemaining > principalRemaining * 0.02
+                  ? interestRemaining
+                  : principalRemaining * 0.02,
+            ),
     );
   }
 }
@@ -87,9 +93,9 @@ class LoanBalance {
     required this.interestRemaining,
   });
 
-  double get total => _roundCurrency(principalRemaining + interestRemaining);
+  double get monthlyInterest => _roundCurrency(principalRemaining * 0.02);
 
-  bool get isSettled => total < 0.01;
+  bool get isSettled => principalRemaining < 0.01;
 }
 
 class LoanRepayment {
@@ -99,6 +105,7 @@ class LoanRepayment {
   final double interestPaid;
   final double principalPaid;
   final DateTime paidOn;
+  final DateTime createdAt;
 
   const LoanRepayment({
     required this.id,
@@ -107,6 +114,7 @@ class LoanRepayment {
     required this.interestPaid,
     required this.principalPaid,
     required this.paidOn,
+    required this.createdAt,
   });
 
   factory LoanRepayment.fromMap(Map<String, dynamic> row) {
@@ -117,6 +125,7 @@ class LoanRepayment {
       interestPaid: (row['interest_paid'] as num).toDouble(),
       principalPaid: (row['principal_paid'] as num).toDouble(),
       paidOn: DateTime.parse(row['paid_on'] as String),
+      createdAt: DateTime.parse(row['created_at'] as String),
     );
   }
 }
@@ -147,8 +156,11 @@ class LoanRepository {
           .timeout(const Duration(seconds: 10)),
       _client
           .from('loan_repayments')
-          .select('id, loan_id, amount, interest_paid, principal_paid, paid_on')
-          .order('paid_on', ascending: false)
+          .select(
+            'id, loan_id, amount, interest_paid, principal_paid, paid_on, created_at',
+          )
+          .order('created_at', ascending: false)
+          .order('id', ascending: false)
           .timeout(const Duration(seconds: 10)),
       _client
           .from('members')
@@ -184,7 +196,8 @@ class LoanRepository {
 
   Future<void> recordRepayment({
     required String loanId,
-    required double amount,
+    required double interestPaid,
+    required double principalPaid,
     required DateTime paidOn,
   }) async {
     await _client
@@ -192,10 +205,36 @@ class LoanRepository {
           'record_loan_repayment',
           params: {
             'p_loan_id': loanId,
-            'p_amount': amount,
+            'p_interest_paid': interestPaid,
+            'p_principal_paid': principalPaid,
             'p_paid_on': _dateOnly(paidOn),
           },
         )
+        .timeout(const Duration(seconds: 10));
+  }
+
+  Future<void> editRepayment({
+    required String repaymentId,
+    required double interestPaid,
+    required double principalPaid,
+    required DateTime paidOn,
+  }) async {
+    await _client
+        .rpc(
+          'edit_loan_repayment',
+          params: {
+            'p_repayment_id': repaymentId,
+            'p_interest_paid': interestPaid,
+            'p_principal_paid': principalPaid,
+            'p_paid_on': _dateOnly(paidOn),
+          },
+        )
+        .timeout(const Duration(seconds: 10));
+  }
+
+  Future<void> deleteRepayment(String repaymentId) async {
+    await _client
+        .rpc('delete_loan_repayment', params: {'p_repayment_id': repaymentId})
         .timeout(const Duration(seconds: 10));
   }
 

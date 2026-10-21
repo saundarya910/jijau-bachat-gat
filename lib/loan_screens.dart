@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_application_1/services/loan_repository.dart';
@@ -28,8 +27,14 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
     _overview = widget.loans.fetchOverview();
   }
 
-  void _reload() {
-    setState(() => _overview = widget.loans.fetchOverview());
+  Future<void> _reload() async {
+    final request = widget.loans.fetchOverview();
+    setState(() => _overview = request);
+    try {
+      await request;
+    } on Exception catch (error) {
+      if (mounted) _showError('माहिती रिफ्रेश करता आली नाही: $error');
+    }
   }
 
   Future<void> _createLoan() async {
@@ -52,8 +57,80 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
           _CreateLoanDialog(repository: widget.loans, members: members),
     );
     if (created == true && mounted) {
-      _reload();
+      await _reload();
       _showSuccess('कर्ज नोंदवले.');
+    }
+  }
+
+  Future<bool> _editRepayment(
+    BuildContext context,
+    LoanAccount loan,
+    List<LoanRepayment> loanRepayments,
+    LoanRepayment repayment,
+  ) async {
+    final chronological = [...loanRepayments]
+      ..sort((a, b) {
+        final dateOrder = a.createdAt.compareTo(b.createdAt);
+        return dateOrder != 0 ? dateOrder : a.id.compareTo(b.id);
+      });
+    final index = chronological.indexWhere((item) => item.id == repayment.id);
+    final earliest = index > 0
+        ? chronological[index - 1].paidOn
+        : loan.disbursedOn;
+    final latest = index >= 0 && index < chronological.length - 1
+        ? chronological[index + 1].paidOn
+        : DateTime.now();
+    final edited = await showDialog<bool>(
+      context: context,
+      builder: (context) => _RepaymentDialog(
+        repository: widget.loans,
+        loan: loan,
+        balance: loan.balanceOn(loanRepayments, DateTime.now()),
+        earliestPaymentDate: earliest,
+        latestPaymentDate: latest,
+        repaymentToEdit: repayment,
+      ),
+    );
+    if (edited != true || !mounted) return false;
+    await _reload();
+    _showSuccess('परतफेड तपशील दुरुस्त केले.');
+    return true;
+  }
+
+  Future<bool> _deleteRepayment(
+    BuildContext context,
+    LoanRepayment repayment,
+  ) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('परतफेड रद्द करायची?'),
+        content: const Text(
+          'ही परतफेड हटवल्यावर मूळधन आणि व्याजाची बाकी पुन्हा मोजली जाईल.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('नाही'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('हटवा'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return false;
+
+    try {
+      await widget.loans.deleteRepayment(repayment.id);
+      if (!mounted) return false;
+      await _reload();
+      _showSuccess('परतफेड हटवली; बाकी पुन्हा मोजली.');
+      return true;
+    } on Exception catch (error) {
+      if (mounted) _showError('परतफेड हटवता आली नाही: $error');
+      return false;
     }
   }
 
@@ -77,7 +154,7 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
           title: const Text('कर्ज व परतफेड'),
           actions: [
             IconButton(
-              onPressed: _reload,
+              onPressed: () => _reload(),
               icon: const Icon(Icons.refresh),
               tooltip: 'माहिती रिफ्रेश करा',
             ),
@@ -127,8 +204,15 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
                   repository: widget.loans,
                   onReload: _reload,
                   onSuccess: _showSuccess,
+                  onEdit: _editRepayment,
+                  onDelete: _deleteRepayment,
                 ),
-                _RepaymentHistoryTab(overview: snapshot.data!),
+                _RepaymentHistoryTab(
+                  overview: snapshot.data!,
+                  onEdit: (payment, loan, loanRepayments) =>
+                      _editRepayment(context, loan, loanRepayments, payment),
+                  onDelete: (payment) => _deleteRepayment(context, payment),
+                ),
               ],
             );
           },
@@ -146,14 +230,25 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
 class _LoanAccountsTab extends StatelessWidget {
   final LoanOverview overview;
   final LoanRepository repository;
-  final VoidCallback onReload;
+  final Future<void> Function() onReload;
   final ValueChanged<String> onSuccess;
+  final Future<bool> Function(
+    BuildContext context,
+    LoanAccount loan,
+    List<LoanRepayment> loanRepayments,
+    LoanRepayment repayment,
+  )
+  onEdit;
+  final Future<bool> Function(BuildContext context, LoanRepayment repayment)
+  onDelete;
 
   const _LoanAccountsTab({
     required this.overview,
     required this.repository,
     required this.onReload,
     required this.onSuccess,
+    required this.onEdit,
+    required this.onDelete,
   });
 
   @override
@@ -167,7 +262,7 @@ class _LoanAccountsTab extends StatelessWidget {
     };
     final outstanding = balances.values.fold<double>(
       0,
-      (sum, balance) => sum + balance.total,
+      (sum, balance) => sum + balance.principalRemaining,
     );
     final openLoans = overview.loans
         .where((loan) => !(balances[loan.id]?.isSettled ?? true))
@@ -187,7 +282,7 @@ class _LoanAccountsTab extends StatelessWidget {
           color: const Color(0xFFE0F2E4),
           child: ListTile(
             leading: const Icon(Icons.account_balance_wallet),
-            title: const Text('एकूण बाकी कर्ज'),
+            title: const Text('एकूण बाकी कर्ज (मूळधन)'),
             trailing: Text(
               _money(outstanding),
               style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
@@ -209,6 +304,9 @@ class _LoanAccountsTab extends StatelessWidget {
                   .toList(),
               onReload: onReload,
               onSuccess: onSuccess,
+              onEdit: (payment, selectedLoan, loanRepayments) =>
+                  onEdit(context, selectedLoan, loanRepayments, payment),
+              onDelete: (payment) => onDelete(context, payment),
             ),
           ),
         _SectionTitle(title: 'फेडलेली कर्जे', count: closedLoans.length),
@@ -226,6 +324,9 @@ class _LoanAccountsTab extends StatelessWidget {
                   .toList(),
               onReload: onReload,
               onSuccess: onSuccess,
+              onEdit: (payment, selectedLoan, loanRepayments) =>
+                  onEdit(context, selectedLoan, loanRepayments, payment),
+              onDelete: (payment) => onDelete(context, payment),
             ),
           ),
       ],
@@ -239,8 +340,15 @@ class _LoanCard extends StatelessWidget {
   final Member? member;
   final LoanBalance balance;
   final List<LoanRepayment> repayments;
-  final VoidCallback onReload;
+  final Future<void> Function() onReload;
   final ValueChanged<String> onSuccess;
+  final Future<bool> Function(
+    LoanRepayment payment,
+    LoanAccount loan,
+    List<LoanRepayment> loanRepayments,
+  )
+  onEdit;
+  final Future<bool> Function(LoanRepayment payment) onDelete;
 
   const _LoanCard({
     required this.loan,
@@ -250,6 +358,8 @@ class _LoanCard extends StatelessWidget {
     required this.repayments,
     required this.onReload,
     required this.onSuccess,
+    required this.onEdit,
+    required this.onDelete,
   });
 
   Future<void> _recordRepayment(
@@ -267,10 +377,11 @@ class _LoanCard extends StatelessWidget {
         earliestPaymentDate: sorted.isEmpty
             ? loan.disbursedOn
             : sorted.last.paidOn,
+        latestPaymentDate: DateTime.now(),
       ),
     );
     if (recorded == true) {
-      onReload();
+      await onReload();
       if (closeDetails && context.mounted) {
         Navigator.of(context).pop();
       }
@@ -292,6 +403,16 @@ class _LoanCard extends StatelessWidget {
               balance: balance,
               repayments: repayments,
               onRecord: () => _recordRepayment(context, closeDetails: true),
+              onEdit: (payment) async {
+                final edited = await onEdit(payment, loan, repayments);
+                if (edited && context.mounted) Navigator.of(context).pop();
+                return edited;
+              },
+              onDelete: (payment) async {
+                final deleted = await onDelete(payment);
+                if (deleted && context.mounted) Navigator.of(context).pop();
+                return deleted;
+              },
             ),
           ),
         ),
@@ -302,8 +423,8 @@ class _LoanCard extends StatelessWidget {
         title: Text(member?.name ?? 'सदस्य उपलब्ध नाही'),
         subtitle: Text(
           'कर्ज ${_formatDate(loan.disbursedOn)} • घेतले ${_money(loan.principal)}'
-          '\nबाकी ${_money(balance.total)} '
-          '(मूळधन ${_money(balance.principalRemaining)} + व्याज ${_money(balance.interestRemaining)})',
+          '\nमूळधन बाकी ${_money(balance.principalRemaining)}'
+          ' • व्याज बाकी ${_money(balance.interestRemaining)}',
         ),
         isThreeLine: true,
         trailing: balance.isSettled
@@ -323,8 +444,19 @@ class _LoanCard extends StatelessWidget {
 
 class _RepaymentHistoryTab extends StatelessWidget {
   final LoanOverview overview;
+  final Future<bool> Function(
+    LoanRepayment payment,
+    LoanAccount loan,
+    List<LoanRepayment> loanRepayments,
+  )
+  onEdit;
+  final Future<bool> Function(LoanRepayment payment) onDelete;
 
-  const _RepaymentHistoryTab({required this.overview});
+  const _RepaymentHistoryTab({
+    required this.overview,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -337,7 +469,10 @@ class _RepaymentHistoryTab extends StatelessWidget {
       for (final member in overview.members) member.id: member,
     };
     final repayments = [...overview.repayments]
-      ..sort((a, b) => b.paidOn.compareTo(a.paidOn));
+      ..sort((a, b) {
+        final dateOrder = b.createdAt.compareTo(a.createdAt);
+        return dateOrder != 0 ? dateOrder : b.id.compareTo(a.id);
+      });
 
     return ListView.separated(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
@@ -359,13 +494,70 @@ class _RepaymentHistoryTab extends StatelessWidget {
               '${_formatDate(payment.paidOn)} • मूळधन ${_money(payment.principalPaid)}'
               ' • व्याज ${_money(payment.interestPaid)}',
             ),
-            trailing: Text(
-              _money(payment.amount),
-              style: const TextStyle(fontWeight: FontWeight.bold),
-            ),
+            trailing: loan == null
+                ? Text(
+                    _money(payment.amount),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _money(payment.amount),
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      _RepaymentActionsMenu(
+                        onEdit: () => onEdit(
+                          payment,
+                          loan,
+                          overview.repayments
+                              .where((item) => item.loanId == loan.id)
+                              .toList(),
+                        ),
+                        onDelete: () => onDelete(payment),
+                      ),
+                    ],
+                  ),
           ),
         );
       },
+    );
+  }
+}
+
+class _RepaymentActionsMenu extends StatelessWidget {
+  final Future<bool> Function() onEdit;
+  final Future<bool> Function() onDelete;
+
+  const _RepaymentActionsMenu({required this.onEdit, required this.onDelete});
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: 'परतफेड बदल / हटवा',
+      onSelected: (action) async {
+        if (action == 'edit') {
+          await onEdit();
+        } else if (action == 'delete') {
+          await onDelete();
+        }
+      },
+      itemBuilder: (context) => const [
+        PopupMenuItem(
+          value: 'edit',
+          child: ListTile(
+            leading: Icon(Icons.edit_outlined),
+            title: Text('दुरुस्त करा'),
+          ),
+        ),
+        PopupMenuItem(
+          value: 'delete',
+          child: ListTile(
+            leading: Icon(Icons.delete_outline, color: Colors.red),
+            title: Text('हटवा'),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -376,6 +568,8 @@ class _LoanDetailsScreen extends StatelessWidget {
   final LoanBalance balance;
   final List<LoanRepayment> repayments;
   final VoidCallback onRecord;
+  final Future<bool> Function(LoanRepayment payment) onEdit;
+  final Future<bool> Function(LoanRepayment payment) onDelete;
 
   const _LoanDetailsScreen({
     required this.loan,
@@ -383,12 +577,21 @@ class _LoanDetailsScreen extends StatelessWidget {
     required this.balance,
     required this.repayments,
     required this.onRecord,
+    required this.onEdit,
+    required this.onDelete,
   });
 
   @override
   Widget build(BuildContext context) {
     final sorted = [...repayments]
-      ..sort((a, b) => b.paidOn.compareTo(a.paidOn));
+      ..sort((a, b) {
+        final dateOrder = b.createdAt.compareTo(a.createdAt);
+        return dateOrder != 0 ? dateOrder : b.id.compareTo(a.id);
+      });
+    final interestPaid = repayments.fold<double>(
+      0,
+      (sum, payment) => sum + payment.interestPaid,
+    );
     return Scaffold(
       appBar: AppBar(title: Text(memberName)),
       floatingActionButton: balance.isSettled
@@ -419,12 +622,16 @@ class _LoanDetailsScreen extends StatelessWidget {
                 ),
                 ListTile(
                   title: const Text('जमा व्याज'),
+                  trailing: Text(_money(interestPaid)),
+                ),
+                ListTile(
+                  title: const Text('व्याज बाकी'),
                   trailing: Text(_money(balance.interestRemaining)),
                 ),
                 ListTile(
-                  title: const Text('एकूण बाकी'),
+                  title: const Text('एकूण बाकी (मूळधन)'),
                   trailing: Text(
-                    _money(balance.total),
+                    _money(balance.principalRemaining),
                     style: const TextStyle(fontWeight: FontWeight.bold),
                   ),
                 ),
@@ -447,6 +654,10 @@ class _LoanDetailsScreen extends StatelessWidget {
                   subtitle: Text(
                     '${_formatDate(payment.paidOn)} • मूळधन ${_money(payment.principalPaid)}'
                     ' • व्याज ${_money(payment.interestPaid)}',
+                  ),
+                  trailing: _RepaymentActionsMenu(
+                    onEdit: () => onEdit(payment),
+                    onDelete: () => onDelete(payment),
                   ),
                 ),
               ),
@@ -595,12 +806,16 @@ class _RepaymentDialog extends StatefulWidget {
   final LoanAccount loan;
   final LoanBalance balance;
   final DateTime earliestPaymentDate;
+  final DateTime latestPaymentDate;
+  final LoanRepayment? repaymentToEdit;
 
   const _RepaymentDialog({
     required this.repository,
     required this.loan,
     required this.balance,
     required this.earliestPaymentDate,
+    required this.latestPaymentDate,
+    this.repaymentToEdit,
   });
 
   @override
@@ -609,7 +824,8 @@ class _RepaymentDialog extends StatefulWidget {
 
 class _RepaymentDialogState extends State<_RepaymentDialog> {
   final _formKey = GlobalKey<FormState>();
-  final _amountController = TextEditingController();
+  final _interestController = TextEditingController();
+  final _principalController = TextEditingController();
   DateTime _paidOn = DateTime.now();
   String? _error;
   bool _saving = false;
@@ -617,27 +833,42 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
   @override
   void initState() {
     super.initState();
-    final earliest = DateTime(
-      widget.earliestPaymentDate.year,
-      widget.earliestPaymentDate.month,
-      widget.earliestPaymentDate.day,
+    final repayment = widget.repaymentToEdit;
+    _interestController.text =
+        (repayment?.interestPaid ?? widget.balance.monthlyInterest)
+            .toStringAsFixed(2);
+    _principalController.text = (repayment?.principalPaid ?? 0).toStringAsFixed(
+      2,
     );
+    _paidOn = repayment?.paidOn ?? DateTime.now();
+    final earliest = _dateOnly(widget.earliestPaymentDate);
+    final latest = _dateOnly(widget.latestPaymentDate);
     if (_paidOn.isBefore(earliest)) _paidOn = earliest;
+    if (_paidOn.isAfter(latest)) _paidOn = latest;
   }
 
   @override
   void dispose() {
-    _amountController.dispose();
+    _interestController.dispose();
+    _principalController.dispose();
     super.dispose();
   }
 
+  double get _interestAmount =>
+      double.tryParse(_interestController.text.trim()) ?? 0;
+
+  double get _principalAmount =>
+      double.tryParse(_principalController.text.trim()) ?? 0;
+
+  double get _totalAmount => _interestAmount + _principalAmount;
+
   Future<void> _chooseDate() async {
-    final today = DateTime.now();
+    final latest = _dateOnly(widget.latestPaymentDate);
     final date = await showDatePicker(
       context: context,
-      initialDate: _paidOn.isAfter(today) ? today : _paidOn,
-      firstDate: widget.earliestPaymentDate,
-      lastDate: today,
+      initialDate: _paidOn,
+      firstDate: _dateOnly(widget.earliestPaymentDate),
+      lastDate: latest,
       helpText: 'परतफेड तारीख निवडा',
     );
     if (date != null) setState(() => _paidOn = date);
@@ -650,11 +881,22 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
       _error = null;
     });
     try {
-      await widget.repository.recordRepayment(
-        loanId: widget.loan.id,
-        amount: double.parse(_amountController.text.trim()),
-        paidOn: _paidOn,
-      );
+      final repayment = widget.repaymentToEdit;
+      if (repayment == null) {
+        await widget.repository.recordRepayment(
+          loanId: widget.loan.id,
+          interestPaid: _interestAmount,
+          principalPaid: _principalAmount,
+          paidOn: _paidOn,
+        );
+      } else {
+        await widget.repository.editRepayment(
+          repaymentId: repayment.id,
+          interestPaid: _interestAmount,
+          principalPaid: _principalAmount,
+          paidOn: _paidOn,
+        );
+      }
       if (mounted) Navigator.of(context).pop(true);
     } on PostgrestException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -668,43 +910,63 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('परतफेड नोंद'),
+      title: Text(
+        widget.repaymentToEdit == null ? 'परतफेड नोंद' : 'परतफेड दुरुस्त करा',
+      ),
       content: Form(
         key: _formKey,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('एकूण बाकी: ${_money(widget.balance.total)}'),
-            const SizedBox(height: 8),
-            TextFormField(
-              controller: _amountController,
-              decoration: const InputDecoration(labelText: 'भरलेली रक्कम (₹)'),
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('बाकी मूळधन: ${_money(widget.balance.principalRemaining)}'),
+              const SizedBox(height: 8),
+              TextFormField(
+                controller: _interestController,
+                decoration: InputDecoration(
+                  labelText: 'व्याज (मासिक 2%) (₹)',
+                  helperText:
+                      'बाकी मूळधनाच्या 2% प्रमाणे: ${_money(widget.balance.monthlyInterest)}',
+                ),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+                ],
+                onChanged: (_) => setState(() {}),
+                validator: _validateRepaymentAmount,
               ),
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
-              ],
-              validator: (value) {
-                final amount = double.tryParse(value?.trim() ?? '');
-                if (amount == null || amount <= 0) {
-                  return 'योग्य रक्कम भरा.';
-                }
-                if (amount > widget.balance.total + 0.001) {
-                  return 'रक्कम बाकीपेक्षा जास्त असू शकत नाही.';
-                }
-                return null;
-              },
-            ),
-            TextButton.icon(
-              onPressed: _saving ? null : _chooseDate,
-              icon: const Icon(Icons.event),
-              label: Text('परतफेड दिनांक: ${_formatDate(_paidOn)}'),
-            ),
-            const Text('आधी जमा व्याज, नंतर मूळधन कमी होईल.'),
-            if (_error != null) _ErrorText(_error!),
-          ],
+              TextFormField(
+                controller: _principalController,
+                decoration: InputDecoration(
+                  labelText: 'मूळधन परतफेड रक्कम (₹)',
+                  helperText:
+                      'बाकी मूळधन: ${_money(widget.balance.principalRemaining)} (जास्त रक्कमही चालेल)',
+                ),
+                keyboardType: const TextInputType.numberWithOptions(
+                  decimal: true,
+                ),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d{0,2}')),
+                ],
+                onChanged: (_) => setState(() {}),
+                validator: _validateRepaymentAmount,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'एकूण जमा: ${_money(_totalAmount)}',
+                style: const TextStyle(fontWeight: FontWeight.bold),
+              ),
+              TextButton.icon(
+                onPressed: _saving ? null : _chooseDate,
+                icon: const Icon(Icons.event),
+                label: Text('परतफेड दिनांक: ${_formatDate(_paidOn)}'),
+              ),
+              if (_error != null) _ErrorText(_error!),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -714,11 +976,24 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
         ),
         FilledButton(
           onPressed: _saving ? null : _save,
-          child: Text(_saving ? 'जतन होत आहे...' : 'परतफेड नोंदवा'),
+          child: Text(
+            _saving
+                ? 'जतन होत आहे...'
+                : widget.repaymentToEdit == null
+                ? 'परतफेड नोंदवा'
+                : 'बदल जतन करा',
+          ),
         ),
       ],
     );
   }
+}
+
+String? _validateRepaymentAmount(String? value) {
+  if (value == null || value.trim().isEmpty) return null;
+  final amount = double.tryParse(value.trim());
+  if (amount == null || amount < 0) return 'योग्य रक्कम भरा.';
+  return null;
 }
 
 class _SectionTitle extends StatelessWidget {
@@ -838,6 +1113,8 @@ String _money(double amount) {
       ? '₹${rounded.toStringAsFixed(0)}'
       : '₹${rounded.toStringAsFixed(2)}';
 }
+
+DateTime _dateOnly(DateTime date) => DateTime(date.year, date.month, date.day);
 
 String _formatDate(DateTime date) {
   final local = date.toLocal();

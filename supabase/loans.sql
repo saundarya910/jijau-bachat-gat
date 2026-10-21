@@ -13,7 +13,7 @@ create index if not exists loans_member_id_idx
 create table if not exists public.loan_repayments (
   id uuid primary key default gen_random_uuid(),
   loan_id uuid not null references public.loans(id) on delete restrict,
-  amount numeric(12, 2) not null check (amount > 0),
+  amount numeric(12, 2) not null,
   interest_paid numeric(12, 2) not null check (interest_paid >= 0),
   principal_paid numeric(12, 2) not null check (principal_paid >= 0),
   paid_on date not null,
@@ -22,6 +22,13 @@ create table if not exists public.loan_repayments (
   constraint loan_repayment_amount_matches_allocation
     check (amount = interest_paid + principal_paid)
 );
+
+alter table public.loan_repayments
+  drop constraint if exists loan_repayments_amount_check;
+alter table public.loan_repayments
+  drop constraint if exists loan_repayments_amount_nonnegative;
+alter table public.loan_repayments
+  add constraint loan_repayments_amount_nonnegative check (amount >= 0);
 
 create index if not exists loan_repayments_loan_id_idx
   on public.loan_repayments(loan_id, paid_on);
@@ -51,9 +58,12 @@ create policy "Admins can read loan repayments"
 grant select, insert on public.loans to authenticated;
 grant select on public.loan_repayments to authenticated;
 
+drop function if exists public.record_loan_repayment(uuid, numeric, date);
+
 create or replace function public.record_loan_repayment(
   p_loan_id uuid,
-  p_amount numeric,
+  p_interest_paid numeric,
+  p_principal_paid numeric,
   p_paid_on date
 )
 returns void
@@ -63,23 +73,20 @@ set search_path = ''
 as $$
 declare
   v_loan record;
-  v_month date;
-  v_principal_paid_before_month numeric(12, 2);
-  v_principal_paid numeric(12, 2);
-  v_interest_paid numeric(12, 2);
-  v_accrued_interest numeric(12, 2) := 0;
-  v_interest_due numeric(12, 2);
-  v_principal_due numeric(12, 2);
-  v_interest_component numeric(12, 2);
-  v_principal_component numeric(12, 2);
   v_latest_paid_on date;
 begin
   if coalesce(auth.jwt() -> 'app_metadata' ->> 'is_admin', 'false') <> 'true' then
     raise exception using errcode = '42501', message = 'Admin access required.';
   end if;
 
-  if p_amount is null or p_amount <= 0 or p_amount <> round(p_amount, 2) then
-    raise exception using errcode = '22023', message = 'Repayment amount must be positive and limited to paise precision.';
+  if p_interest_paid is null
+    or p_interest_paid < 0
+    or p_interest_paid <> round(p_interest_paid, 2)
+    or p_principal_paid is null
+    or p_principal_paid < 0
+    or p_principal_paid <> round(p_principal_paid, 2)
+  then
+    raise exception using errcode = '22023', message = 'Interest and principal repayment amounts must be non-negative and limited to paise precision.';
   end if;
 
   if p_paid_on is null or p_paid_on > current_date then
@@ -109,56 +116,6 @@ begin
     raise exception using errcode = '22023', message = 'Record repayments in payment-date order.';
   end if;
 
-  for v_month in
-    select series.month_start::date
-    from pg_catalog.generate_series(
-      (pg_catalog.date_trunc('month', v_loan.disbursed_on)::date
-        + interval '1 month'),
-      pg_catalog.date_trunc('month', p_paid_on)::date,
-      interval '1 month'
-    ) as series(month_start)
-  loop
-    select coalesce(sum(principal_paid), 0)
-    into v_principal_paid_before_month
-    from public.loan_repayments
-    where loan_id = p_loan_id
-      and paid_on < v_month;
-
-    v_accrued_interest := v_accrued_interest
-    + round(
-        greatest(v_loan.principal - v_principal_paid_before_month, 0)
-            * 0.02,
-          2
-        );
-  end loop;
-
-  select
-    coalesce(sum(principal_paid), 0),
-    coalesce(sum(interest_paid), 0)
-  into v_principal_paid, v_interest_paid
-  from public.loan_repayments
-  where loan_id = p_loan_id;
-
-  v_principal_due := greatest(
-    v_loan.principal - v_principal_paid,
-    0
-  );
-  v_interest_due := greatest(
-    v_accrued_interest - v_interest_paid,
-    0
-  );
-
-  if v_principal_due = 0 then
-    v_interest_due := 0;
-  end if;
-
-  if p_amount > v_principal_due + v_interest_due then
-    raise exception using errcode = '22023', message = 'Repayment exceeds the outstanding loan balance.';
-  end if;
-
-  v_interest_component := least(p_amount, v_interest_due);
-  v_principal_component := p_amount - v_interest_component;
-
   insert into public.loan_repayments (
     loan_id,
     amount,
@@ -169,16 +126,184 @@ begin
   )
   values (
     p_loan_id,
-    p_amount,
-    v_interest_component,
-    v_principal_component,
+    p_interest_paid + p_principal_paid,
+    p_interest_paid,
+    p_principal_paid,
     p_paid_on,
     auth.uid()
   );
 end;
 $$;
 
-revoke all on function public.record_loan_repayment(uuid, numeric, date)
+revoke all on function public.record_loan_repayment(
+  uuid,
+  numeric,
+  numeric,
+  date
+)
   from public;
-grant execute on function public.record_loan_repayment(uuid, numeric, date)
+grant execute on function public.record_loan_repayment(
+  uuid,
+  numeric,
+  numeric,
+  date
+)
+  to authenticated;
+
+create or replace function public.edit_loan_repayment(
+  p_repayment_id uuid,
+  p_interest_paid numeric,
+  p_principal_paid numeric,
+  p_paid_on date
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_loan_id uuid;
+  v_loan record;
+  v_created_at timestamptz;
+  v_previous_paid_on date;
+  v_next_paid_on date;
+begin
+  if coalesce(auth.jwt() -> 'app_metadata' ->> 'is_admin', 'false') <> 'true' then
+    raise exception using errcode = '42501', message = 'Admin access required.';
+  end if;
+
+  if p_interest_paid is null
+    or p_interest_paid < 0
+    or p_interest_paid <> round(p_interest_paid, 2)
+    or p_principal_paid is null
+    or p_principal_paid < 0
+    or p_principal_paid <> round(p_principal_paid, 2)
+  then
+    raise exception using errcode = '22023', message = 'Interest and principal repayment amounts must be non-negative and limited to paise precision.';
+  end if;
+
+  select loan_id
+  into v_loan_id
+  from public.loan_repayments
+  where id = p_repayment_id;
+
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Repayment not found.';
+  end if;
+
+  select id, disbursed_on
+  into v_loan
+  from public.loans
+  where id = v_loan_id
+  for update;
+
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Loan not found.';
+  end if;
+
+  select created_at
+  into v_created_at
+  from public.loan_repayments
+  where id = p_repayment_id
+    and loan_id = v_loan_id
+  for update;
+
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Repayment not found.';
+  end if;
+
+  if p_paid_on is null
+    or p_paid_on > current_date
+    or p_paid_on < v_loan.disbursed_on
+  then
+    raise exception using errcode = '22023', message = 'Payment date must be between the loan date and today.';
+  end if;
+
+  select max(paid_on)
+  into v_previous_paid_on
+  from public.loan_repayments
+  where loan_id = v_loan_id
+    and (created_at, id) < (v_created_at, p_repayment_id);
+
+  select min(paid_on)
+  into v_next_paid_on
+  from public.loan_repayments
+  where loan_id = v_loan_id
+    and (created_at, id) > (v_created_at, p_repayment_id);
+
+  if (v_previous_paid_on is not null and p_paid_on < v_previous_paid_on)
+    or (v_next_paid_on is not null and p_paid_on > v_next_paid_on)
+  then
+    raise exception using errcode = '22023', message = 'Payment date must remain in the original repayment order.';
+  end if;
+
+  update public.loan_repayments
+  set amount = p_interest_paid + p_principal_paid,
+      interest_paid = p_interest_paid,
+      principal_paid = p_principal_paid,
+      paid_on = p_paid_on
+  where id = p_repayment_id;
+end;
+$$;
+
+create or replace function public.delete_loan_repayment(
+  p_repayment_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_loan_id uuid;
+begin
+  if coalesce(auth.jwt() -> 'app_metadata' ->> 'is_admin', 'false') <> 'true' then
+    raise exception using errcode = '42501', message = 'Admin access required.';
+  end if;
+
+  select loan_id
+  into v_loan_id
+  from public.loan_repayments
+  where id = p_repayment_id;
+
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Repayment not found.';
+  end if;
+
+  perform 1
+  from public.loans
+  where id = v_loan_id
+  for update;
+
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Loan not found.';
+  end if;
+
+  delete from public.loan_repayments
+  where id = p_repayment_id;
+
+  if not found then
+    raise exception using errcode = 'P0002', message = 'Repayment not found.';
+  end if;
+end;
+$$;
+
+revoke all on function public.edit_loan_repayment(
+  uuid,
+  numeric,
+  numeric,
+  date
+)
+  from public;
+grant execute on function public.edit_loan_repayment(
+  uuid,
+  numeric,
+  numeric,
+  date
+)
+  to authenticated;
+
+revoke all on function public.delete_loan_repayment(uuid)
+  from public;
+grant execute on function public.delete_loan_repayment(uuid)
   to authenticated;

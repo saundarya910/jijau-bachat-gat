@@ -14,6 +14,7 @@ void main() {
     WidgetTester tester,
   ) async {
     await tester.pumpWidget(const JijauApp());
+    await tester.pumpAndSettle();
 
     expect(
       find.text(

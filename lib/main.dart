@@ -9,29 +9,42 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
 import 'package:speech_to_text/speech_to_text.dart';
 
-Future<void> main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-
-  const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
-  const supabasePublishableKey = String.fromEnvironment(
-    'SUPABASE_PUBLISHABLE_KEY',
-  );
-  if (supabaseUrl.isEmpty || supabasePublishableKey.isEmpty) {
-    runApp(const JijauApp());
-    return;
-  }
-
-  await Supabase.initialize(
-    url: supabaseUrl,
-    publishableKey: supabasePublishableKey,
-  );
-  runApp(JijauApp(client: Supabase.instance.client));
+  runApp(const JijauApp());
 }
 
-class JijauApp extends StatelessWidget {
+class JijauApp extends StatefulWidget {
   final SupabaseClient? client;
 
   const JijauApp({super.key, this.client});
+
+  @override
+  State<JijauApp> createState() => _JijauAppState();
+}
+
+class _JijauAppState extends State<JijauApp> {
+  late Future<SupabaseClient?> _clientFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _clientFuture = _initializeSupabase();
+  }
+
+  Future<SupabaseClient?> _initializeSupabase() async {
+    const supabaseUrl = String.fromEnvironment('SUPABASE_URL');
+    const supabasePublishableKey = String.fromEnvironment(
+      'SUPABASE_PUBLISHABLE_KEY',
+    );
+    if (supabaseUrl.isEmpty || supabasePublishableKey.isEmpty) return null;
+
+    await Supabase.initialize(
+      url: supabaseUrl,
+      publishableKey: supabasePublishableKey,
+    );
+    return Supabase.instance.client;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -50,9 +63,58 @@ class JijauApp extends StatelessWidget {
           centerTitle: false,
         ),
       ),
-      home: client == null
-          ? const SupabaseSetupScreen()
-          : AuthGate(client: client!),
+      home: widget.client == null
+          ? FutureBuilder<SupabaseClient?>(
+              future: _clientFuture,
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return SupabaseInitializationErrorScreen(
+                    message: '${snapshot.error}',
+                  );
+                }
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Scaffold(
+                    body: Center(child: CircularProgressIndicator()),
+                  );
+                }
+                final client = snapshot.data;
+                return client == null
+                    ? const SupabaseSetupScreen()
+                    : AuthGate(client: client);
+              },
+            )
+          : AuthGate(client: widget.client!),
+    );
+  }
+}
+
+class SupabaseInitializationErrorScreen extends StatelessWidget {
+  final String message;
+
+  const SupabaseInitializationErrorScreen({super.key, required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.red, size: 48),
+              const SizedBox(height: 16),
+              const Text(
+                'Supabase सुरू करता आले नाही.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 8),
+              Text(message, textAlign: TextAlign.center),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

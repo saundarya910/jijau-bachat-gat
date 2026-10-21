@@ -11,12 +11,20 @@ Registration, payment history, and payment entry require an authenticated
 admin account.
 
 Loan tracking uses simple interest at 2% per calendar month on outstanding
-principal. Interest starts in the month after the loan is issued; unpaid
-interest does not itself accrue interest. Repayments are applied to accrued
-interest before principal. Any accrued interest is waived once the full
-principal has been repaid. Run [`supabase/loans.sql`](supabase/loans.sql) in
-the Supabase SQL Editor to enable loan accounts and repayment history. The
-screen then shows open and repaid loans, balances, and repayment allocations.
+principal. The first 2% charge applies on the loan date, with another charge
+on the first day of each following calendar month; unpaid interest does not
+itself accrue interest. The repayment form defaults interest to 2% of the
+current remaining principal, with a separate principal amount. While principal
+remains, at least one month's 2% interest remains due. Either amount can be
+zero or exceed its displayed balance; the balance is clamped at zero, and
+interest is waived once the full principal has been repaid. Run
+[`supabase/loans.sql`](supabase/loans.sql) in the Supabase SQL Editor to enable
+loan accounts and repayment history. Re-run it for the updated split-amount
+repayment function, zero-amount repayments, and the admin-only repayment
+edit/delete functions. The screen then shows open and repaid loans, balances,
+and repayment allocations. “एकूण बाकी” is remaining principal (original loan
+minus principal repaid); unpaid interest is shown separately and is not added
+to that figure.
 
 The **रोख व UPI व्यवहार** page records deposits and expenses by cash or UPI.
 Run [`supabase/finance_transactions.sql`](supabase/finance_transactions.sql)
@@ -53,6 +61,14 @@ loans issued, repayments, and outstanding loan balances from the saved records.
 
    ```powershell
    flutter run -d chrome `
+     --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co `
+     --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_OR_LEGACY_ANON_KEY
+   ```
+
+   To build an Android release APK with the same configuration:
+
+   ```powershell
+   flutter build apk --release `
      --dart-define=SUPABASE_URL=https://YOUR_PROJECT.supabase.co `
      --dart-define=SUPABASE_PUBLISHABLE_KEY=YOUR_PUBLISHABLE_OR_LEGACY_ANON_KEY
    ```

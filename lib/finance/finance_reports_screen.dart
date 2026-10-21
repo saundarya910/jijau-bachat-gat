@@ -122,7 +122,10 @@ class _FinanceReportsScreenState extends State<FinanceReportsScreen> {
             0,
             (total, loan) => loan.disbursedOn.isAfter(asOf)
                 ? total
-                : total + loan.balanceOn(data.loans.repayments, asOf).total,
+                : total +
+                      loan
+                          .balanceOn(data.loans.repayments, asOf)
+                          .principalRemaining,
           );
 
           return ListView(
@@ -170,7 +173,7 @@ class _FinanceReportsScreenState extends State<FinanceReportsScreen> {
               ),
               FinanceReportCard(
                 icon: Icons.account_balance_wallet_outlined,
-                title: 'एकूण बाकी कर्ज',
+                title: 'एकूण बाकी कर्ज (मूळधन)',
                 value: formatMoney(outstanding),
                 detail: 'निवडलेल्या महिन्याच्या अखेरची बाकी',
                 color: const Color(0xFFC26A00),
