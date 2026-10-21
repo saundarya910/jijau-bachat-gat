@@ -204,7 +204,7 @@ class _InvestorManagementScreenState extends State<InvestorManagementScreen> {
                     color: Colors.white,
                     child: Column(
                       children: [
-                        ListTile(
+                        ExpansionTile(
                           leading: const CircleAvatar(
                             backgroundColor: Color(0xFFE0F2E4),
                             child: Icon(
@@ -217,13 +217,23 @@ class _InvestorManagementScreenState extends State<InvestorManagementScreen> {
                             'मूळ रक्कम बाकी ${_money(balance.principalRemaining)}'
                             ' • द्यायचे व्याज ${_money(balance.interestDue)}',
                           ),
-                          isThreeLine: true,
-                          trailing: Text(
-                            _money(
-                              balance.principalRemaining + balance.interestDue,
-                            ),
-                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          childrenPadding: const EdgeInsets.fromLTRB(
+                            16,
+                            0,
+                            16,
+                            12,
                           ),
+                          children: [
+                            _InvestorMonthlyBreakdown(
+                              transactions: overview.transactions
+                                  .where(
+                                    (transaction) =>
+                                        transaction.investorId ==
+                                        balance.investorId,
+                                  )
+                                  .toList(),
+                            ),
+                          ],
                         ),
                         if (balance.principalRemaining + balance.interestDue >
                             0)
@@ -287,6 +297,236 @@ class _InvestorManagementScreenState extends State<InvestorManagementScreen> {
     );
   }
 }
+
+class _InvestorMonthlyBreakdown extends StatelessWidget {
+  final List<InvestorTransaction> transactions;
+
+  const _InvestorMonthlyBreakdown({required this.transactions});
+
+  @override
+  Widget build(BuildContext context) {
+    final months = _buildInvestorMonthlyBreakdown(transactions);
+    if (months.isEmpty) {
+      return const Align(
+        alignment: Alignment.centerLeft,
+        child: Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Text('या गुंतवणूकदारासाठी अजून जमा नोंद नाही.'),
+        ),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const Align(
+          alignment: Alignment.centerLeft,
+          child: Padding(
+            padding: EdgeInsets.only(bottom: 8),
+            child: Text(
+              'महिन्यानुसार व्याज आणि परतावा',
+              style: TextStyle(fontWeight: FontWeight.bold),
+            ),
+          ),
+        ),
+        ...months.reversed.map((month) {
+          final monthTransactions =
+              transactions
+                  .where(
+                    (transaction) =>
+                        transaction.transactionDate.year == month.month.year &&
+                        transaction.transactionDate.month == month.month.month,
+                  )
+                  .toList()
+                ..sort(
+                  (first, second) =>
+                      first.transactionDate.compareTo(second.transactionDate),
+                );
+
+          return Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 8),
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F8F5),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  formatMarathiMonthYear(month.month),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'महिन्याच्या सुरुवातीची मूळ रक्कम: '
+                  '${_money(month.openingPrincipal)}',
+                ),
+                Text('या महिन्याचे 2% व्याज: ${_money(month.interestAccrued)}'),
+                Text('या महिन्यात जमा: ${_money(month.contributions)}'),
+                Text(
+                  'या महिन्यात दिलेले व्याज: '
+                  '${_money(month.interestPaid)}',
+                ),
+                Text(
+                  'या महिन्यात परत केलेली मूळ रक्कम: '
+                  '${_money(month.principalPaid)}',
+                ),
+                Text(
+                  'महिन्यानंतर बाकी मूळ रक्कम: '
+                  '${_money(month.closingPrincipal)}',
+                ),
+                Text(
+                  'या महिन्यानंतर बाकी व्याज: '
+                  '${_money(month.interestDue)}',
+                ),
+                if (monthTransactions.isNotEmpty) ...[
+                  const Divider(height: 16),
+                  ...monthTransactions.map((transaction) {
+                    final label = switch (transaction.type) {
+                      InvestorTransactionType.contribution => 'जमा',
+                      InvestorTransactionType.interestPayout => 'व्याज परतावा',
+                      InvestorTransactionType.principalPayout =>
+                        'मूळ रक्कम परतावा',
+                    };
+                    return Padding(
+                      padding: const EdgeInsets.only(bottom: 3),
+                      child: Text(
+                        '$label • ${_formatDate(transaction.transactionDate)}'
+                        ' • ${_money(transaction.amount)}'
+                        ' • ${financePaymentMethodLabel(transaction.paymentMethod)}',
+                        style: const TextStyle(fontSize: 12),
+                      ),
+                    );
+                  }),
+                ],
+              ],
+            ),
+          );
+        }),
+      ],
+    );
+  }
+}
+
+class _InvestorMonthBreakdown {
+  final DateTime month;
+  final double openingPrincipal;
+  final double interestAccrued;
+  final double contributions;
+  final double interestPaid;
+  final double principalPaid;
+  final double closingPrincipal;
+  final double interestDue;
+
+  const _InvestorMonthBreakdown({
+    required this.month,
+    required this.openingPrincipal,
+    required this.interestAccrued,
+    required this.contributions,
+    required this.interestPaid,
+    required this.principalPaid,
+    required this.closingPrincipal,
+    required this.interestDue,
+  });
+}
+
+List<_InvestorMonthBreakdown> _buildInvestorMonthlyBreakdown(
+  List<InvestorTransaction> transactions,
+) {
+  final today = DateTime.now();
+  final asOf = DateTime(today.year, today.month, today.day);
+  final eligibleTransactions = transactions
+      .where((transaction) => !transaction.transactionDate.isAfter(asOf))
+      .toList();
+  final contributions = eligibleTransactions
+      .where(
+        (transaction) =>
+            transaction.type == InvestorTransactionType.contribution,
+      )
+      .toList();
+  if (contributions.isEmpty) return const [];
+
+  final firstContribution = contributions
+      .map((transaction) => transaction.transactionDate)
+      .reduce((first, date) => date.isBefore(first) ? date : first);
+  var month = DateTime(firstContribution.year, firstContribution.month + 1);
+  final lastMonth = DateTime(asOf.year, asOf.month);
+  var accruedInterest = 0.0;
+  var interestPaidToDate = 0.0;
+  final breakdown = <_InvestorMonthBreakdown>[];
+
+  while (!month.isAfter(lastMonth)) {
+    final openingPrincipal = eligibleTransactions
+        .where(
+          (transaction) =>
+              transaction.transactionDate.isBefore(month) &&
+              (transaction.type == InvestorTransactionType.contribution ||
+                  transaction.type == InvestorTransactionType.principalPayout),
+        )
+        .fold<double>(
+          0,
+          (principal, transaction) =>
+              principal +
+              (transaction.type == InvestorTransactionType.contribution
+                  ? transaction.amount
+                  : -transaction.amount),
+        )
+        .clamp(0, double.infinity)
+        .toDouble();
+
+    final transactionsThisMonth = eligibleTransactions.where(
+      (transaction) =>
+          transaction.transactionDate.year == month.year &&
+          transaction.transactionDate.month == month.month,
+    );
+    final monthContributions = transactionsThisMonth
+        .where(
+          (transaction) =>
+              transaction.type == InvestorTransactionType.contribution,
+        )
+        .fold<double>(0, (sum, transaction) => sum + transaction.amount);
+    final monthInterestPaid = transactionsThisMonth
+        .where(
+          (transaction) =>
+              transaction.type == InvestorTransactionType.interestPayout,
+        )
+        .fold<double>(0, (sum, transaction) => sum + transaction.amount);
+    final monthPrincipalPaid = transactionsThisMonth
+        .where(
+          (transaction) =>
+              transaction.type == InvestorTransactionType.principalPayout,
+        )
+        .fold<double>(0, (sum, transaction) => sum + transaction.amount);
+    final monthInterest = _roundCurrency(openingPrincipal * 0.02);
+    accruedInterest += monthInterest;
+    interestPaidToDate += monthInterestPaid;
+
+    breakdown.add(
+      _InvestorMonthBreakdown(
+        month: month,
+        openingPrincipal: openingPrincipal,
+        interestAccrued: monthInterest,
+        contributions: monthContributions,
+        interestPaid: monthInterestPaid,
+        principalPaid: monthPrincipalPaid,
+        closingPrincipal:
+            (openingPrincipal + monthContributions - monthPrincipalPaid)
+                .clamp(0, double.infinity)
+                .toDouble(),
+        interestDue: (accruedInterest - interestPaidToDate)
+            .clamp(0, double.infinity)
+            .toDouble(),
+      ),
+    );
+    month = DateTime(month.year, month.month + 1);
+  }
+
+  return breakdown;
+}
+
+double _roundCurrency(double amount) => (amount * 100).round() / 100;
 
 class _InvestorContributionDialog extends StatefulWidget {
   final InvestorRepository repository;

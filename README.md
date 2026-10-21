@@ -52,6 +52,8 @@ to investors. Interest continues to accrue until an investor requests and
 receives a payout. Member loan repayments do not automatically pay investors
 or reduce their balance. Record an actual investor payout manually, entering
 the interest and principal portions separately and selecting Cash or UPI.
+Tap an investor entry to see each month's opening principal, 2% interest,
+contributions, interest/principal payouts, and remaining balances.
 Per the selected pooled-ledger approach,
 investor contributions are not linked to individual member loans, and
 available investor cash does not limit loan disbursements. Run
