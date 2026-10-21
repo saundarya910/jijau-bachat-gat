@@ -1,0 +1,3 @@
+flutter run -d web-server `
+>>   --dart-define=SUPABASE_URL=https://bwpvtwnjreuabhzdxcqi.supabase.co `
+>>   --dart-define=SUPABASE_PUBLISHABLE_KEY=sb_publishable_XFfttg5mkJ6M9Gcm-aFBsA_cqXr7lb3
