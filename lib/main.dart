@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_application_1/services/member_repository.dart';
 import 'package:flutter_application_1/services/loan_repository.dart';
+import 'package:flutter_application_1/services/investor_repository.dart';
+import 'package:flutter_application_1/investor_screens.dart';
 import 'package:flutter_application_1/loan_screens.dart';
 import 'package:flutter_application_1/services/finance_repository.dart';
 import 'package:flutter_application_1/finance_screens.dart';
+import 'package:flutter_application_1/finance/finance_shared_widgets.dart';
 import 'package:speech_to_text/speech_recognition_error.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:speech_to_text/speech_recognition_result.dart';
@@ -278,6 +281,7 @@ class _HomeScreenState extends State<HomeScreen> {
   late final MemberRepository _members;
   late final LoanRepository _loans;
   late final FinanceRepository _finance;
+  late final InvestorRepository _investors;
 
   @override
   void initState() {
@@ -285,6 +289,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _members = MemberRepository(widget.client);
     _loans = LoanRepository(widget.client);
     _finance = FinanceRepository(widget.client);
+    _investors = InvestorRepository(widget.client);
   }
 
   @override
@@ -437,6 +442,17 @@ class _HomeScreenState extends State<HomeScreen> {
                         loans: _loans,
                         members: _members,
                       ),
+                    ),
+                  ),
+                ),
+                MenuTile(
+                  title: 'गुंतवणूकदार',
+                  subtitle: 'गुंतवणूक, 2% व्याज व कर्ज वसुलीतून परतावा',
+                  icon: Icons.account_balance_outlined,
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (context) =>
+                          InvestorManagementScreen(repository: _investors),
                     ),
                   ),
                 ),
@@ -1184,7 +1200,8 @@ class _MonthlySavingsScreenState extends State<MonthlySavingsScreen> {
         subtitle: Text(
           payment == null
               ? 'बाकी • ₹500'
-              : 'भरले • ${_formatDate(payment.paidOn)} • ₹${payment.amount}',
+              : 'भरले • ${_formatDate(payment.paidOn)} • ₹${payment.amount}'
+                    ' • ${financePaymentMethodLabel(payment.paymentMethod)}',
         ),
         trailing: payment == null
             ? IconButton(
@@ -1379,7 +1396,8 @@ class _MemberSavingsHistoryScreenState
                           '${_monthLabel(payment.contributionMonth)} • ₹${payment.amount}',
                         ),
                         subtitle: Text(
-                          'जमा दिनांक: ${_formatDate(payment.paidOn)}',
+                          'जमा दिनांक: ${_formatDate(payment.paidOn)}'
+                          ' • ${financePaymentMethodLabel(payment.paymentMethod)}',
                         ),
                         trailing: const Icon(
                           Icons.check_circle,
@@ -1417,6 +1435,7 @@ class SavingsPaymentDialog extends StatefulWidget {
 class _SavingsPaymentDialogState extends State<SavingsPaymentDialog> {
   late DateTime _contributionMonth;
   DateTime _paidOn = DateTime.now();
+  FinancePaymentMethod _paymentMethod = FinancePaymentMethod.cash;
   String? _error;
   bool _isSaving = false;
 
@@ -1466,6 +1485,7 @@ class _SavingsPaymentDialogState extends State<SavingsPaymentDialog> {
         memberId: widget.member.id,
         contributionMonth: _contributionMonth,
         paidOn: _paidOn,
+        paymentMethod: _paymentMethod,
       );
       if (mounted) Navigator.of(context).pop(true);
     } on PostgrestException catch (error) {
@@ -1502,6 +1522,12 @@ class _SavingsPaymentDialogState extends State<SavingsPaymentDialog> {
             onPressed: _choosePaidDate,
             icon: const Icon(Icons.event),
             label: Text('पैसे मिळाले: ${_formatDate(_paidOn)}'),
+          ),
+          const Text('पैसे कशाने मिळाले?'),
+          const SizedBox(height: 8),
+          PaymentMethodSelector(
+            value: _paymentMethod,
+            onChanged: (method) => setState(() => _paymentMethod = method),
           ),
           const Padding(
             padding: EdgeInsets.only(top: 8),

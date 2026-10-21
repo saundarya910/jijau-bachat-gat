@@ -93,10 +93,15 @@ class _FinanceReportsScreenState extends State<FinanceReportsScreen> {
             0,
             (total, payment) => total + payment.amount,
           );
-          final loansTotal = loansIssued.fold<double>(
-            0,
-            (total, loan) => total + loan.principal,
-          );
+          final loansTotal =
+              loansIssued.fold<double>(
+                0,
+                (total, loan) => total + loan.principal,
+              ) +
+              data.loans.loans
+                  .expand((loan) => loan.disbursements)
+                  .where((item) => sameMonth(item.disbursedOn, _selectedMonth))
+                  .fold<double>(0, (total, item) => total + item.amount);
           final repaymentTotal = repayments.fold<double>(
             0,
             (total, payment) => total + payment.amount,

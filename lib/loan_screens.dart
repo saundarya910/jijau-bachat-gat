@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_application_1/finance/finance_shared_widgets.dart';
+import 'package:flutter_application_1/services/finance_repository.dart';
 import 'package:flutter_application_1/services/loan_repository.dart';
 import 'package:flutter_application_1/services/member_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
@@ -39,10 +41,12 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
 
   Future<void> _createLoan() async {
     List<Member> members;
+    LoanOverview overview;
     try {
       members = await widget.members.fetchMembers();
+      overview = await widget.loans.fetchOverview();
     } on Exception catch (error) {
-      if (mounted) _showError('सदस्यांची यादी लोड करता आली नाही: $error');
+      if (mounted) _showError('कर्ज माहिती लोड करता आली नाही: $error');
       return;
     }
     if (!mounted) return;
@@ -53,12 +57,15 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
 
     final created = await showDialog<bool>(
       context: context,
-      builder: (context) =>
-          _CreateLoanDialog(repository: widget.loans, members: members),
+      builder: (context) => _CreateLoanDialog(
+        repository: widget.loans,
+        members: members,
+        overview: overview,
+      ),
     );
     if (created == true && mounted) {
       await _reload();
-      _showSuccess('कर्ज नोंदवले.');
+      _showSuccess('कर्जाची रक्कम नोंदवली.');
     }
   }
 
@@ -74,9 +81,15 @@ class _LoanManagementScreenState extends State<LoanManagementScreen> {
         return dateOrder != 0 ? dateOrder : a.id.compareTo(b.id);
       });
     final index = chronological.indexWhere((item) => item.id == repayment.id);
-    final earliest = index > 0
+    var earliest = index > 0
         ? chronological[index - 1].paidOn
         : loan.disbursedOn;
+    for (final disbursement in loan.disbursements) {
+      if (disbursement.createdAt.isBefore(repayment.createdAt) &&
+          disbursement.disbursedOn.isAfter(earliest)) {
+        earliest = disbursement.disbursedOn;
+      }
+    }
     final latest = index >= 0 && index < chronological.length - 1
         ? chronological[index + 1].paidOn
         : DateTime.now();
@@ -368,15 +381,21 @@ class _LoanCard extends StatelessWidget {
   }) async {
     final sorted = [...repayments]
       ..sort((a, b) => a.paidOn.compareTo(b.paidOn));
+    var earliestPaymentDate = sorted.isEmpty
+        ? loan.disbursedOn
+        : sorted.last.paidOn;
+    for (final disbursement in loan.disbursements) {
+      if (disbursement.disbursedOn.isAfter(earliestPaymentDate)) {
+        earliestPaymentDate = disbursement.disbursedOn;
+      }
+    }
     final recorded = await showDialog<bool>(
       context: context,
       builder: (context) => _RepaymentDialog(
         repository: repository,
         loan: loan,
         balance: balance,
-        earliestPaymentDate: sorted.isEmpty
-            ? loan.disbursedOn
-            : sorted.last.paidOn,
+        earliestPaymentDate: earliestPaymentDate,
         latestPaymentDate: DateTime.now(),
       ),
     );
@@ -422,7 +441,7 @@ class _LoanCard extends StatelessWidget {
         ),
         title: Text(member?.name ?? 'सदस्य उपलब्ध नाही'),
         subtitle: Text(
-          'कर्ज ${_formatDate(loan.disbursedOn)} • घेतले ${_money(loan.principal)}'
+          'कर्ज ${_formatDate(loan.disbursedOn)} • घेतले ${_money(loan.totalDisbursed)}'
           '\nमूळधन बाकी ${_money(balance.principalRemaining)}'
           ' • व्याज बाकी ${_money(balance.interestRemaining)}',
         ),
@@ -474,53 +493,81 @@ class _RepaymentHistoryTab extends StatelessWidget {
         return dateOrder != 0 ? dateOrder : b.id.compareTo(a.id);
       });
 
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
-      itemCount: repayments.length,
-      separatorBuilder: (context, index) => const SizedBox(height: 6),
-      itemBuilder: (context, index) {
-        final payment = repayments[index];
-        final loan = loansById[payment.loanId];
-        final member = loan == null ? null : membersById[loan.memberId];
-        return Card(
-          color: Colors.white,
-          child: ListTile(
-            leading: const CircleAvatar(
-              backgroundColor: Color(0xFFE0F2E4),
-              child: Icon(Icons.payments, color: Color(0xFF218838)),
-            ),
-            title: Text(member?.name ?? 'सदस्य उपलब्ध नाही'),
-            subtitle: Text(
-              '${_formatDate(payment.paidOn)} • मूळधन ${_money(payment.principalPaid)}'
-              ' • व्याज ${_money(payment.interestPaid)}',
-            ),
-            trailing: loan == null
-                ? Text(
-                    _money(payment.amount),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
-                  )
-                : Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
+    final paymentsByMember = <String, List<LoanRepayment>>{};
+    final memberNames = <String, String>{};
+    for (final payment in repayments) {
+      final loan = loansById[payment.loanId];
+      final memberId = loan?.memberId ?? 'unknown';
+      paymentsByMember.putIfAbsent(memberId, () => []).add(payment);
+      memberNames[memberId] =
+          membersById[memberId]?.name ?? 'सदस्य उपलब्ध नाही';
+    }
+
+    final memberIds = paymentsByMember.keys.toList()
+      ..sort(
+        (a, b) => memberNames[a]!.toLowerCase().compareTo(
+          memberNames[b]!.toLowerCase(),
+        ),
+      );
+    final children = <Widget>[];
+    for (final memberId in memberIds) {
+      final memberPayments = paymentsByMember[memberId]!;
+      children
+        ..add(
+          _SectionTitle(
+            title: memberNames[memberId]!,
+            count: memberPayments.length,
+          ),
+        )
+        ..addAll(
+          memberPayments.map((payment) {
+            final loan = loansById[payment.loanId];
+            return Card(
+              color: Colors.white,
+              child: ListTile(
+                leading: const CircleAvatar(
+                  backgroundColor: Color(0xFFE0F2E4),
+                  child: Icon(Icons.payments, color: Color(0xFF218838)),
+                ),
+                subtitle: Text(
+                  '${_formatDate(payment.paidOn)} • मूळधन ${_money(payment.principalPaid)}'
+                  ' • व्याज ${_money(payment.interestPaid)}'
+                  ' • ${financePaymentMethodLabel(payment.paymentMethod)}',
+                ),
+                trailing: loan == null
+                    ? Text(
                         _money(payment.amount),
                         style: const TextStyle(fontWeight: FontWeight.bold),
+                      )
+                    : Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            _money(payment.amount),
+                            style: const TextStyle(fontWeight: FontWeight.bold),
+                          ),
+                          _RepaymentActionsMenu(
+                            onEdit: () => onEdit(
+                              payment,
+                              loan,
+                              overview.repayments
+                                  .where((item) => item.loanId == loan.id)
+                                  .toList(),
+                            ),
+                            onDelete: () => onDelete(payment),
+                          ),
+                        ],
                       ),
-                      _RepaymentActionsMenu(
-                        onEdit: () => onEdit(
-                          payment,
-                          loan,
-                          overview.repayments
-                              .where((item) => item.loanId == loan.id)
-                              .toList(),
-                        ),
-                        onDelete: () => onDelete(payment),
-                      ),
-                    ],
-                  ),
-          ),
-        );
-      },
+              ),
+            );
+          }),
+        )
+        ..add(const SizedBox(height: 8));
+    }
+
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 96),
+      children: children,
     );
   }
 }
@@ -610,11 +657,15 @@ class _LoanDetailsScreen extends StatelessWidget {
               children: [
                 ListTile(
                   title: const Text('कर्जाची रक्कम'),
-                  trailing: Text(_money(loan.principal)),
+                  trailing: Text(_money(loan.totalDisbursed)),
                 ),
                 ListTile(
                   title: const Text('कर्ज दिनांक'),
                   trailing: Text(_formatDate(loan.disbursedOn)),
+                ),
+                ListTile(
+                  title: const Text('पहिली रक्कम दिली'),
+                  trailing: Text(financePaymentMethodLabel(loan.paymentMethod)),
                 ),
                 ListTile(
                   title: const Text('मूळधन बाकी'),
@@ -638,6 +689,41 @@ class _LoanDetailsScreen extends StatelessWidget {
               ],
             ),
           ),
+          _SectionTitle(
+            title: 'कर्ज दिल्याचा इतिहास',
+            count: loan.disbursements.length + 1,
+          ),
+          Card(
+            color: Colors.white,
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.payments_outlined),
+                  title: Text(_money(loan.principal)),
+                  subtitle: Text(
+                    '${_formatDate(loan.disbursedOn)} • '
+                    '${financePaymentMethodLabel(loan.paymentMethod)}',
+                  ),
+                ),
+                ...([...loan.disbursements]..sort((a, b) {
+                      final dateOrder = b.disbursedOn.compareTo(a.disbursedOn);
+                      return dateOrder != 0
+                          ? dateOrder
+                          : b.createdAt.compareTo(a.createdAt);
+                    }))
+                    .map(
+                      (disbursement) => ListTile(
+                        leading: const Icon(Icons.add_card),
+                        title: Text(_money(disbursement.amount)),
+                        subtitle: Text(
+                          '${_formatDate(disbursement.disbursedOn)} • '
+                          '${financePaymentMethodLabel(disbursement.paymentMethod)}',
+                        ),
+                      ),
+                    ),
+              ],
+            ),
+          ),
           _SectionTitle(title: 'परतफेड इतिहास', count: sorted.length),
           if (sorted.isEmpty)
             const _EmptyLabel(message: 'या कर्जाची परतफेड नोंद नाही.')
@@ -653,7 +739,8 @@ class _LoanDetailsScreen extends StatelessWidget {
                   title: Text(_money(payment.amount)),
                   subtitle: Text(
                     '${_formatDate(payment.paidOn)} • मूळधन ${_money(payment.principalPaid)}'
-                    ' • व्याज ${_money(payment.interestPaid)}',
+                    ' • व्याज ${_money(payment.interestPaid)}'
+                    ' • ${financePaymentMethodLabel(payment.paymentMethod)}',
                   ),
                   trailing: _RepaymentActionsMenu(
                     onEdit: () => onEdit(payment),
@@ -671,8 +758,13 @@ class _LoanDetailsScreen extends StatelessWidget {
 class _CreateLoanDialog extends StatefulWidget {
   final LoanRepository repository;
   final List<Member> members;
+  final LoanOverview overview;
 
-  const _CreateLoanDialog({required this.repository, required this.members});
+  const _CreateLoanDialog({
+    required this.repository,
+    required this.members,
+    required this.overview,
+  });
 
   @override
   State<_CreateLoanDialog> createState() => _CreateLoanDialogState();
@@ -683,8 +775,45 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
   final _principalController = TextEditingController();
   late String _memberId;
   DateTime _disbursedOn = DateTime.now();
+  FinancePaymentMethod _paymentMethod = FinancePaymentMethod.cash;
   String? _error;
   bool _saving = false;
+
+  DateTime get _earliestDisbursementDate {
+    final loan = _activeLoan;
+    if (loan == null) return DateTime(2000);
+    final latestRepaymentDate = widget.overview.repayments
+        .where((repayment) => repayment.loanId == loan.id)
+        .map((repayment) => repayment.paidOn)
+        .fold<DateTime?>(null, (latest, date) {
+          if (latest == null || date.isAfter(latest)) return date;
+          return latest;
+        });
+    if (latestRepaymentDate != null &&
+        latestRepaymentDate.isAfter(loan.disbursedOn)) {
+      return latestRepaymentDate;
+    }
+    return loan.disbursedOn;
+  }
+
+  LoanAccount? get _activeLoan {
+    final activeLoans =
+        widget.overview.loans
+            .where((loan) => loan.memberId == _memberId)
+            .where(
+              (loan) => !loan
+                  .balanceOn(widget.overview.repayments, DateTime.now())
+                  .isSettled,
+            )
+            .toList()
+          ..sort((a, b) {
+            final dateOrder = b.disbursedOn.compareTo(a.disbursedOn);
+            return dateOrder != 0
+                ? dateOrder
+                : b.createdAt.compareTo(a.createdAt);
+          });
+    return activeLoans.isEmpty ? null : activeLoans.first;
+  }
 
   @override
   void initState() {
@@ -700,12 +829,16 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
 
   Future<void> _chooseDate() async {
     final today = DateTime.now();
+    final earliestDate = _earliestDisbursementDate;
+    final initialDate = _disbursedOn.isBefore(earliestDate)
+        ? earliestDate
+        : _disbursedOn;
     final date = await showDatePicker(
       context: context,
-      initialDate: _disbursedOn.isAfter(today) ? today : _disbursedOn,
-      firstDate: DateTime(2000),
+      initialDate: initialDate.isAfter(today) ? today : initialDate,
+      firstDate: earliestDate,
       lastDate: today,
-      helpText: 'कर्ज दिल्याची तारीख निवडा',
+      helpText: 'रक्कम दिल्याची तारीख निवडा',
     );
     if (date != null) setState(() => _disbursedOn = date);
   }
@@ -717,11 +850,23 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
       _error = null;
     });
     try {
-      await widget.repository.createLoan(
-        memberId: _memberId,
-        principal: double.parse(_principalController.text.trim()),
-        disbursedOn: _disbursedOn,
-      );
+      final amount = double.parse(_principalController.text.trim());
+      final activeLoan = _activeLoan;
+      if (activeLoan == null) {
+        await widget.repository.createLoan(
+          memberId: _memberId,
+          principal: amount,
+          disbursedOn: _disbursedOn,
+          paymentMethod: _paymentMethod,
+        );
+      } else {
+        await widget.repository.addDisbursement(
+          loanId: activeLoan.id,
+          amount: amount,
+          disbursedOn: _disbursedOn,
+          paymentMethod: _paymentMethod,
+        );
+      }
       if (mounted) Navigator.of(context).pop(true);
     } on PostgrestException catch (error) {
       if (mounted) setState(() => _error = error.message);
@@ -735,7 +880,9 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('नवीन कर्ज नोंद'),
+      title: Text(
+        _activeLoan == null ? 'नवीन कर्ज नोंद' : 'चालू कर्जात रक्कम जोडा',
+      ),
       content: Form(
         key: _formKey,
         child: Column(
@@ -760,7 +907,11 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
             ),
             TextFormField(
               controller: _principalController,
-              decoration: const InputDecoration(labelText: 'कर्जाची रक्कम (₹)'),
+              decoration: InputDecoration(
+                labelText: _activeLoan == null
+                    ? 'कर्जाची रक्कम (₹)'
+                    : 'वाढीव कर्जाची रक्कम (₹)',
+              ),
               keyboardType: const TextInputType.numberWithOptions(
                 decimal: true,
               ),
@@ -769,10 +920,26 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
               ],
               validator: (value) {
                 final amount = double.tryParse(value?.trim() ?? '');
-                return amount == null || amount <= 0
-                    ? 'योग्य कर्जाची रक्कम भरा.'
-                    : null;
+                if (amount == null || amount <= 0) {
+                  return 'योग्य कर्जाची रक्कम भरा.';
+                }
+                final activeLoan = _activeLoan;
+                if (activeLoan != null &&
+                    _disbursedOn.isBefore(_earliestDisbursementDate)) {
+                  return 'रक्कम देण्याची तारीख आधीच्या परतफेडीपूर्वीची असू शकत नाही.';
+                }
+                return null;
               },
+            ),
+            const SizedBox(height: 12),
+            const Align(
+              alignment: Alignment.centerLeft,
+              child: Text('कर्जाची रक्कम कशी दिली?'),
+            ),
+            const SizedBox(height: 6),
+            PaymentMethodSelector(
+              value: _paymentMethod,
+              onChanged: (method) => setState(() => _paymentMethod = method),
             ),
             TextButton.icon(
               onPressed: _saving ? null : _chooseDate,
@@ -781,7 +948,10 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
             ),
             const Align(
               alignment: Alignment.centerLeft,
-              child: Text('व्याज: बाकी मूळधनावर दरमहा 2%'),
+              child: Text(
+                'चालू कर्ज असल्यास रक्कम त्याच खात्यात जोडली जाईल. '
+                'व्याज: बाकी मूळधनावर दरमहा 2%.',
+              ),
             ),
             if (_error != null) _ErrorText(_error!),
           ],
@@ -794,7 +964,13 @@ class _CreateLoanDialogState extends State<_CreateLoanDialog> {
         ),
         FilledButton(
           onPressed: _saving ? null : _save,
-          child: Text(_saving ? 'जतन होत आहे...' : 'कर्ज नोंदवा'),
+          child: Text(
+            _saving
+                ? 'जतन होत आहे...'
+                : _activeLoan == null
+                ? 'कर्ज नोंदवा'
+                : 'चालू कर्जात जोडा',
+          ),
         ),
       ],
     );
@@ -827,6 +1003,7 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
   final _interestController = TextEditingController();
   final _principalController = TextEditingController();
   DateTime _paidOn = DateTime.now();
+  FinancePaymentMethod _paymentMethod = FinancePaymentMethod.cash;
   String? _error;
   bool _saving = false;
 
@@ -841,6 +1018,7 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
       2,
     );
     _paidOn = repayment?.paidOn ?? DateTime.now();
+    _paymentMethod = repayment?.paymentMethod ?? FinancePaymentMethod.cash;
     final earliest = _dateOnly(widget.earliestPaymentDate);
     final latest = _dateOnly(widget.latestPaymentDate);
     if (_paidOn.isBefore(earliest)) _paidOn = earliest;
@@ -888,6 +1066,7 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
           interestPaid: _interestAmount,
           principalPaid: _principalAmount,
           paidOn: _paidOn,
+          paymentMethod: _paymentMethod,
         );
       } else {
         await widget.repository.editRepayment(
@@ -895,6 +1074,7 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
           interestPaid: _interestAmount,
           principalPaid: _principalAmount,
           paidOn: _paidOn,
+          paymentMethod: _paymentMethod,
         );
       }
       if (mounted) Navigator.of(context).pop(true);
@@ -921,6 +1101,13 @@ class _RepaymentDialogState extends State<_RepaymentDialog> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text('बाकी मूळधन: ${_money(widget.balance.principalRemaining)}'),
+              const SizedBox(height: 8),
+              const Text('परतफेड कशाने मिळाली?'),
+              const SizedBox(height: 8),
+              PaymentMethodSelector(
+                value: _paymentMethod,
+                onChanged: (method) => setState(() => _paymentMethod = method),
+              ),
               const SizedBox(height: 8),
               TextFormField(
                 controller: _interestController,

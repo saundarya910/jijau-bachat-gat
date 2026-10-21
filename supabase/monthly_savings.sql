@@ -4,6 +4,8 @@ create table if not exists public.monthly_savings (
   contribution_month date not null,
   paid_on date not null default current_date,
   amount integer not null default 500 check (amount = 500),
+  payment_method text not null default 'cash'
+    check (payment_method in ('cash', 'upi')),
   created_at timestamptz not null default now(),
   created_by uuid not null default auth.uid() references auth.users(id),
   constraint monthly_savings_one_per_member_month
@@ -11,6 +13,10 @@ create table if not exists public.monthly_savings (
   constraint monthly_savings_month_starts_on_first
     check (extract(day from contribution_month) = 1)
 );
+
+alter table public.monthly_savings
+  add column if not exists payment_method text not null default 'cash'
+  check (payment_method in ('cash', 'upi'));
 
 alter table public.monthly_savings enable row level security;
 

@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_application_1/services/finance_repository.dart';
 import 'package:flutter_application_1/services/loan_repository.dart';
 
 void main() {
@@ -52,6 +53,41 @@ void main() {
     expect(balance.principalRemaining, 5000);
     expect(balance.interestRemaining, 100);
     expect(balance.principalRemaining, 5000);
+  });
+
+  test('adds a later disbursement to the same account from its date', () {
+    final loanWithAdditionalAmount = LoanAccount(
+      id: 'loan-1',
+      memberId: 'member-1',
+      principal: 1000,
+      disbursedOn: DateTime(2026, 1, 15),
+      createdAt: DateTime(2026, 1, 15),
+      disbursements: [
+        LoanDisbursement(
+          id: 'disbursement-1',
+          loanId: 'loan-1',
+          amount: 500,
+          disbursedOn: DateTime(2026, 2, 10),
+          createdAt: DateTime(2026, 2, 10),
+          paymentMethod: FinancePaymentMethod.upi,
+        ),
+      ],
+    );
+
+    final beforeAdditionalAmount = loanWithAdditionalAmount.balanceOn(
+      [],
+      DateTime(2026, 2, 1),
+    );
+    expect(beforeAdditionalAmount.principalRemaining, 1000);
+    expect(beforeAdditionalAmount.interestRemaining, 40);
+
+    final afterAdditionalAmount = loanWithAdditionalAmount.balanceOn(
+      [],
+      DateTime(2026, 3, 1),
+    );
+    expect(loanWithAdditionalAmount.totalDisbursed, 1500);
+    expect(afterAdditionalAmount.principalRemaining, 1500);
+    expect(afterAdditionalAmount.interestRemaining, 80);
   });
 
   test('repayment pays accrued interest before reducing principal', () {

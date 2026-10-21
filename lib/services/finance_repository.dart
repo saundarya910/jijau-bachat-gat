@@ -6,6 +6,12 @@ enum FinanceTransactionType { deposit, expense }
 
 enum FinancePaymentMethod { cash, upi }
 
+String financePaymentMethodLabel(FinancePaymentMethod method) =>
+    switch (method) {
+      FinancePaymentMethod.cash => 'रोख',
+      FinancePaymentMethod.upi => 'UPI',
+    };
+
 class FinanceTransaction {
   final String id;
   final FinanceTransactionType type;

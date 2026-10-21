@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter_application_1/services/finance_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import 'member_repository.dart';
@@ -10,6 +11,8 @@ class LoanAccount {
   final double principal;
   final DateTime disbursedOn;
   final DateTime createdAt;
+  final FinancePaymentMethod paymentMethod;
+  final List<LoanDisbursement> disbursements;
 
   const LoanAccount({
     required this.id,
@@ -17,15 +20,32 @@ class LoanAccount {
     required this.principal,
     required this.disbursedOn,
     required this.createdAt,
+    this.paymentMethod = FinancePaymentMethod.cash,
+    this.disbursements = const [],
   });
 
-  factory LoanAccount.fromMap(Map<String, dynamic> row) {
+  double get totalDisbursed =>
+      principal +
+      disbursements.fold<double>(0, (total, item) => total + item.amount);
+
+  factory LoanAccount.fromMap(
+    Map<String, dynamic> row, {
+    List<LoanDisbursement> disbursements = const [],
+  }) {
     return LoanAccount(
       id: row['id'] as String,
       memberId: row['member_id'] as String,
       principal: (row['principal'] as num).toDouble(),
       disbursedOn: DateTime.parse(row['disbursed_on'] as String),
       createdAt: DateTime.parse(row['created_at'] as String),
+      paymentMethod: switch (row['payment_method'] as String) {
+        'cash' => FinancePaymentMethod.cash,
+        'upi' => FinancePaymentMethod.upi,
+        final value => throw FormatException(
+          'Unknown loan disbursement method: $value',
+        ),
+      },
+      disbursements: disbursements,
     );
   }
 
@@ -42,14 +62,31 @@ class LoanAccount {
         )
         .toList();
 
-    var accruedInterest = _roundCurrency(principal * 0.02);
+    final disbursementsAsOf = disbursements
+        .where((item) => !item.disbursedOn.isAfter(endDate))
+        .toList();
+    final principalIssuedAsOf =
+        (loanDate.isAfter(endDate) ? 0 : principal) +
+        disbursementsAsOf.fold<double>(0, (sum, item) => sum + item.amount);
+    var accruedInterest = _roundCurrency(
+      (loanDate.isAfter(endDate) ? 0 : principal) * 0.02,
+    );
+    for (final item in disbursementsAsOf) {
+      accruedInterest = _roundCurrency(accruedInterest + item.amount * 0.02);
+    }
     var accrualMonth = DateTime(loanDate.year, loanDate.month + 1);
     while (!accrualMonth.isAfter(endDate)) {
       final principalPaidBeforeMonth = relevantPayments
           .where((payment) => payment.paidOn.isBefore(accrualMonth))
           .fold<double>(0, (sum, payment) => sum + payment.principalPaid);
-      final principalAtMonthStart = (principal - principalPaidBeforeMonth)
-          .clamp(0.0, principal);
+      final additionalPrincipalAtMonthStart = disbursementsAsOf
+          .where((item) => item.disbursedOn.isBefore(accrualMonth))
+          .fold<double>(0, (sum, item) => sum + item.amount);
+      final principalAtMonthStart =
+          ((loanDate.isAfter(accrualMonth) ? 0 : principal) +
+                  additionalPrincipalAtMonthStart -
+                  principalPaidBeforeMonth)
+              .clamp(0.0, principalIssuedAsOf);
       accruedInterest = _roundCurrency(
         accruedInterest + principalAtMonthStart * 0.02,
       );
@@ -65,7 +102,7 @@ class LoanAccount {
       (sum, payment) => sum + payment.interestPaid,
     );
     final principalRemaining = _roundCurrency(
-      (principal - principalPaid).clamp(0.0, principal),
+      (principalIssuedAsOf - principalPaid).clamp(0.0, principalIssuedAsOf),
     );
     final interestRemaining = _roundCurrency(
       (accruedInterest - interestPaid).clamp(0.0, accruedInterest),
@@ -80,6 +117,41 @@ class LoanAccount {
                   ? interestRemaining
                   : principalRemaining * 0.02,
             ),
+    );
+  }
+}
+
+class LoanDisbursement {
+  final String id;
+  final String loanId;
+  final double amount;
+  final DateTime disbursedOn;
+  final DateTime createdAt;
+  final FinancePaymentMethod paymentMethod;
+
+  const LoanDisbursement({
+    required this.id,
+    required this.loanId,
+    required this.amount,
+    required this.disbursedOn,
+    required this.createdAt,
+    required this.paymentMethod,
+  });
+
+  factory LoanDisbursement.fromMap(Map<String, dynamic> row) {
+    return LoanDisbursement(
+      id: row['id'] as String,
+      loanId: row['loan_id'] as String,
+      amount: (row['amount'] as num).toDouble(),
+      disbursedOn: DateTime.parse(row['disbursed_on'] as String),
+      createdAt: DateTime.parse(row['created_at'] as String),
+      paymentMethod: switch (row['payment_method'] as String) {
+        'cash' => FinancePaymentMethod.cash,
+        'upi' => FinancePaymentMethod.upi,
+        final value => throw FormatException(
+          'Unknown loan disbursement method: $value',
+        ),
+      },
     );
   }
 }
@@ -106,6 +178,7 @@ class LoanRepayment {
   final double principalPaid;
   final DateTime paidOn;
   final DateTime createdAt;
+  final FinancePaymentMethod paymentMethod;
 
   const LoanRepayment({
     required this.id,
@@ -115,6 +188,7 @@ class LoanRepayment {
     required this.principalPaid,
     required this.paidOn,
     required this.createdAt,
+    this.paymentMethod = FinancePaymentMethod.cash,
   });
 
   factory LoanRepayment.fromMap(Map<String, dynamic> row) {
@@ -126,6 +200,13 @@ class LoanRepayment {
       principalPaid: (row['principal_paid'] as num).toDouble(),
       paidOn: DateTime.parse(row['paid_on'] as String),
       createdAt: DateTime.parse(row['created_at'] as String),
+      paymentMethod: switch (row['payment_method'] as String) {
+        'cash' => FinancePaymentMethod.cash,
+        'upi' => FinancePaymentMethod.upi,
+        final value => throw FormatException(
+          'Unknown loan repayment method: $value',
+        ),
+      },
     );
   }
 }
@@ -151,16 +232,25 @@ class LoanRepository {
     final rows = await Future.wait([
       _client
           .from('loans')
-          .select('id, member_id, principal, disbursed_on, created_at')
+          .select(
+            'id, member_id, principal, disbursed_on, created_at, payment_method',
+          )
           .order('created_at', ascending: false)
           .timeout(const Duration(seconds: 10)),
       _client
           .from('loan_repayments')
           .select(
-            'id, loan_id, amount, interest_paid, principal_paid, paid_on, created_at',
+            'id, loan_id, amount, interest_paid, principal_paid, paid_on, created_at, payment_method',
           )
           .order('created_at', ascending: false)
           .order('id', ascending: false)
+          .timeout(const Duration(seconds: 10)),
+      _client
+          .from('loan_disbursements')
+          .select(
+            'id, loan_id, amount, disbursed_on, created_at, payment_method',
+          )
+          .order('created_at', ascending: false)
           .timeout(const Duration(seconds: 10)),
       _client
           .from('members')
@@ -170,11 +260,26 @@ class LoanRepository {
     ]);
     final loanRows = rows[0];
     final repaymentRows = rows[1];
-    final memberRows = rows[2];
+    final disbursementRows = rows[2];
+    final memberRows = rows[3];
+    final disbursementsByLoanId = <String, List<LoanDisbursement>>{};
+    for (final row in disbursementRows) {
+      final disbursement = LoanDisbursement.fromMap(row);
+      disbursementsByLoanId
+          .putIfAbsent(disbursement.loanId, () => [])
+          .add(disbursement);
+    }
 
     return LoanOverview(
       members: memberRows.map(Member.fromMap).toList(),
-      loans: loanRows.map(LoanAccount.fromMap).toList(),
+      loans: loanRows
+          .map(
+            (row) => LoanAccount.fromMap(
+              row,
+              disbursements: disbursementsByLoanId[row['id']] ?? const [],
+            ),
+          )
+          .toList(),
       repayments: repaymentRows.map(LoanRepayment.fromMap).toList(),
     );
   }
@@ -183,6 +288,7 @@ class LoanRepository {
     required String memberId,
     required double principal,
     required DateTime disbursedOn,
+    required FinancePaymentMethod paymentMethod,
   }) async {
     await _client
         .from('loans')
@@ -190,7 +296,27 @@ class LoanRepository {
           'member_id': memberId,
           'principal': principal,
           'disbursed_on': _dateOnly(disbursedOn),
+          'payment_method': _paymentMethodValue(paymentMethod),
         })
+        .timeout(const Duration(seconds: 10));
+  }
+
+  Future<void> addDisbursement({
+    required String loanId,
+    required double amount,
+    required DateTime disbursedOn,
+    required FinancePaymentMethod paymentMethod,
+  }) async {
+    await _client
+        .rpc(
+          'add_loan_disbursement',
+          params: {
+            'p_loan_id': loanId,
+            'p_amount': amount,
+            'p_disbursed_on': _dateOnly(disbursedOn),
+            'p_payment_method': _paymentMethodValue(paymentMethod),
+          },
+        )
         .timeout(const Duration(seconds: 10));
   }
 
@@ -199,6 +325,7 @@ class LoanRepository {
     required double interestPaid,
     required double principalPaid,
     required DateTime paidOn,
+    required FinancePaymentMethod paymentMethod,
   }) async {
     await _client
         .rpc(
@@ -208,6 +335,7 @@ class LoanRepository {
             'p_interest_paid': interestPaid,
             'p_principal_paid': principalPaid,
             'p_paid_on': _dateOnly(paidOn),
+            'p_payment_method': _paymentMethodValue(paymentMethod),
           },
         )
         .timeout(const Duration(seconds: 10));
@@ -218,6 +346,7 @@ class LoanRepository {
     required double interestPaid,
     required double principalPaid,
     required DateTime paidOn,
+    required FinancePaymentMethod paymentMethod,
   }) async {
     await _client
         .rpc(
@@ -227,6 +356,7 @@ class LoanRepository {
             'p_interest_paid': interestPaid,
             'p_principal_paid': principalPaid,
             'p_paid_on': _dateOnly(paidOn),
+            'p_payment_method': _paymentMethodValue(paymentMethod),
           },
         )
         .timeout(const Duration(seconds: 10));
@@ -244,6 +374,11 @@ class LoanRepository {
     final day = date.day.toString().padLeft(2, '0');
     return '$year-$month-$day';
   }
+
+  String _paymentMethodValue(FinancePaymentMethod method) => switch (method) {
+    FinancePaymentMethod.cash => 'cash',
+    FinancePaymentMethod.upi => 'upi',
+  };
 }
 
 double _roundCurrency(double amount) => (amount * 100).round() / 100;

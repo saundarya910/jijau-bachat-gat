@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter_application_1/services/finance_repository.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 class Member {
@@ -31,6 +32,7 @@ class SavingsPayment {
   final DateTime contributionMonth;
   final DateTime paidOn;
   final int amount;
+  final FinancePaymentMethod paymentMethod;
 
   const SavingsPayment({
     required this.id,
@@ -38,6 +40,7 @@ class SavingsPayment {
     required this.contributionMonth,
     required this.paidOn,
     required this.amount,
+    required this.paymentMethod,
   });
 
   factory SavingsPayment.fromMap(Map<String, dynamic> row) {
@@ -47,6 +50,13 @@ class SavingsPayment {
       contributionMonth: DateTime.parse(row['contribution_month'] as String),
       paidOn: DateTime.parse(row['paid_on'] as String),
       amount: (row['amount'] as num).toInt(),
+      paymentMethod: switch (row['payment_method'] as String) {
+        'cash' => FinancePaymentMethod.cash,
+        'upi' => FinancePaymentMethod.upi,
+        final value => throw FormatException(
+          'Unknown savings payment method: $value',
+        ),
+      },
     );
   }
 }
@@ -122,6 +132,7 @@ class MemberRepository {
     required String memberId,
     required DateTime contributionMonth,
     required DateTime paidOn,
+    required FinancePaymentMethod paymentMethod,
   }) async {
     await _client.from('monthly_savings').insert({
       'member_id': memberId,
@@ -129,6 +140,10 @@ class MemberRepository {
         DateTime(contributionMonth.year, contributionMonth.month),
       ),
       'paid_on': _dateOnly(paidOn),
+      'payment_method': switch (paymentMethod) {
+        FinancePaymentMethod.cash => 'cash',
+        FinancePaymentMethod.upi => 'upi',
+      },
     });
   }
 

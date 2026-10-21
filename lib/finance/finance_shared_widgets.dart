@@ -27,7 +27,7 @@ class FinanceMonthSelector extends StatelessWidget {
             tooltip: 'मागील महिना',
           ),
           Text(
-            MaterialLocalizations.of(context).formatMonthYear(month),
+            formatMarathiMonthYear(month),
             style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
           ),
           IconButton(
@@ -37,6 +37,55 @@ class FinanceMonthSelector extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+String formatMarathiMonthYear(DateTime date) {
+  const months = [
+    'जानेवारी',
+    'फेब्रुवारी',
+    'मार्च',
+    'एप्रिल',
+    'मे',
+    'जून',
+    'जुलै',
+    'ऑगस्ट',
+    'सप्टेंबर',
+    'ऑक्टोबर',
+    'नोव्हेंबर',
+    'डिसेंबर',
+  ];
+  return '${months[date.month - 1]} ${date.year}';
+}
+
+class PaymentMethodSelector extends StatelessWidget {
+  final FinancePaymentMethod value;
+  final ValueChanged<FinancePaymentMethod> onChanged;
+
+  const PaymentMethodSelector({
+    super.key,
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SegmentedButton<FinancePaymentMethod>(
+      segments: const [
+        ButtonSegment(
+          value: FinancePaymentMethod.cash,
+          label: Text('रोख'),
+          icon: Icon(Icons.payments_outlined),
+        ),
+        ButtonSegment(
+          value: FinancePaymentMethod.upi,
+          label: Text('UPI'),
+          icon: Icon(Icons.phone_android),
+        ),
+      ],
+      selected: {value},
+      onSelectionChanged: (selection) => onChanged(selection.first),
     );
   }
 }
